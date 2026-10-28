@@ -15,6 +15,7 @@ const OBLIQUITY = 23.4393 * DEG;
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 const nf = new Intl.NumberFormat('es-AR');
 const nf1 = new Intl.NumberFormat('es-AR', { minimumFractionDigits: 1, maximumFractionDigits: 1 });
+const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 
 const CITIES = [
   ['Buenos Aires', -34.60, -58.38, 'America/Argentina/Buenos_Aires'],
@@ -69,11 +70,11 @@ const CITIES = [
 ].map(([name, lat, lon, tz]) => ({ name, lat, lon, tz }));
 
 const PLANETS = [
-  ['Mercury', 'Mercurio', '#d8d0c4', 2.2],
   ['Venus', 'Venus', '#fff6df', 3.6],
-  ['Mars', 'Marte', '#ff8d62', 2.6],
   ['Jupiter', 'Júpiter', '#f6e2bf', 3.3],
+  ['Mars', 'Marte', '#ff8d62', 2.6],
   ['Saturn', 'Saturno', '#efd9a2', 2.8],
+  ['Mercury', 'Mercurio', '#d8d0c4', 2.2],
 ];
 
 // Signos del horóscopo (zodíaco tropical) y su fecha de inicio [mes, día].
@@ -86,6 +87,15 @@ const ZODIAC_ES = {
   Ari: 'Aries', Tau: 'Tauro', Gem: 'Géminis', Cnc: 'Cáncer', Leo: 'Leo', Vir: 'Virgo', Lib: 'Libra',
   Sco: 'Escorpio', Oph: 'Ofiuco', Sgr: 'Sagitario', Cap: 'Capricornio', Aqr: 'Acuario', Psc: 'Piscis',
 };
+
+// Lo que adelanta cada botón "siguiente": una pregunta para que den ganas de seguir.
+const TEASERS = [
+  '¿Cómo estaba la Luna esa noche?',
+  'Hay una estrella que es tuya',
+  '¿Dónde estaba el Sol cuando naciste?',
+  '¿Cuánto viajaste desde ese día?',
+  'Ver tu cielo para historias',
+];
 
 const $ = (id) => document.getElementById(id);
 
@@ -112,7 +122,7 @@ const LINES = SKY.lines.map((seg) => seg.map((v) => (v / 10) * DEG));
 function bvColor(bv) {
   const stops = [[-0.3, [155, 178, 255]], [0, [202, 215, 255]], [0.3, [248, 247, 255]], [0.6, [255, 244, 232]],
     [0.9, [255, 224, 188]], [1.2, [255, 207, 152]], [1.5, [255, 181, 108]], [2.0, [255, 157, 74]]];
-  bv = Math.max(-0.3, Math.min(2, bv));
+  bv = clamp(bv, -0.3, 2);
   let k = 1;
   while (k < stops.length - 1 && stops[k][0] < bv) k++;
   const [b0, c0] = stops[k - 1], [b1, c1] = stops[k];
@@ -135,6 +145,7 @@ function localToDate(y, m, d, h, min, tz) {
   return new Date(guess - off * 60000);
 }
 const fmt = (date, tz, opts) => new Intl.DateTimeFormat('es-AR', { timeZone: tz, ...opts }).format(date);
+const fmtTime = (date, tz) => fmt(date, tz, { hour: '2-digit', minute: '2-digit', hour12: false });
 
 // Tiempo sidéreo local en radianes (precisión de sobra para dibujar el cielo).
 function lst(date, lonDeg) {
@@ -162,7 +173,7 @@ function toEcliptic(ra, dec) {
 const DIRS = ['norte', 'noreste', 'este', 'sureste', 'sur', 'suroeste', 'oeste', 'noroeste'];
 const direction = (az) => DIRS[Math.round(az / 45) % 8];
 
-/* ---------- Dibujo ---------- */
+/* ---------- Dibujo: utilidades ---------- */
 
 function setupCanvas(canvas, w, h) {
   const dpr = Math.min(window.devicePixelRatio || 1, 2.5);
@@ -188,146 +199,385 @@ const glowSprite = (() => {
   return c;
 })();
 
+const hex = (h) => [1, 3, 5].map((i) => parseInt(h.slice(i, i + 2), 16));
+const mix = (a, b, t) => a.map((v, i) => Math.round(v + (b[i] - v) * t));
+const rgb = (c, a = 1) => `rgba(${c[0]},${c[1]},${c[2]},${a})`;
+
+// Color del cielo según la altura del Sol: noche, crepúsculos y día.
+const SKY_STEPS = [
+  [-90, '#04060f', '#141a3a', '#04050b', 5.6, 1],
+  [-18, '#04060f', '#161c40', '#04050b', 5.6, 1],
+  [-12, '#070b22', '#262c60', '#05060e', 4.6, 1],
+  [-6, '#0d1640', '#4d4b88', '#070812', 3.2, 0.9],
+  [-2, '#1a2b66', '#c58074', '#0b0b16', 2.0, 0.7],
+  [0, '#284a90', '#e8a27c', '#10111c', 3.5, 0.32],
+  [10, '#2f6cc0', '#a9cdf0', '#1b2232', 3.5, 0.2],
+  [90, '#2a63b8', '#b6d6f5', '#1b2232', 3.5, 0.2],
+];
+function skyLook(sunAlt) {
+  let k = 1;
+  while (k < SKY_STEPS.length - 1 && SKY_STEPS[k][0] < sunAlt) k++;
+  const a = SKY_STEPS[k - 1], b = SKY_STEPS[k];
+  const t = clamp((sunAlt - a[0]) / (b[0] - a[0]), 0, 1);
+  return { top: mix(hex(a[1]), hex(b[1]), t), horizon: mix(hex(a[2]), hex(b[2]), t), ground: mix(hex(a[3]), hex(b[3]), t),
+    magLimit: a[4] + (b[4] - a[4]) * t, starAlpha: a[5] + (b[5] - a[5]) * t, day: sunAlt > 0 };
+}
+
+function drawStarDot(ctx, x, y, m, col, scale, alpha) {
+  const r = Math.max(0.45, (5.8 - m) * 0.42) * scale;
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = col;
+  if (m < 1.8) {
+    const gs = r * 7;
+    ctx.drawImage(glowSprite, x - gs / 2, y - gs / 2, gs, gs);
+  }
+  ctx.beginPath();
+  ctx.arc(x, y, r, 0, Math.PI * 2);
+  ctx.fill();
+}
+
+function drawObjects(ctx, objects, toXY, o, placed, labelAlpha) {
+  const moonR = (o.moonR || 7) * o.scale;
+  for (const ob of objects) {
+    const d = ob.dec * DEG;
+    const [alt, az] = altAz(ob.ra * DEG, Math.sin(d), Math.cos(d), o.L, o.sinLat, o.cosLat);
+    if (alt < -0.01) continue;
+    const p = toXY(alt, az);
+    if (!p) continue;
+    const [x, y] = p;
+    ctx.globalAlpha = Math.min(1, o.reveal * 1.6);
+    if (ob.kind === 'sun') {
+      const r = 9 * o.scale;
+      const g = ctx.createRadialGradient(x, y, 0, x, y, r * 8);
+      g.addColorStop(0, 'rgba(255,248,225,1)');
+      g.addColorStop(0.12, 'rgba(255,236,190,0.8)');
+      g.addColorStop(1, 'rgba(255,220,160,0)');
+      ctx.fillStyle = g;
+      ctx.fillRect(x - r * 8, y - r * 8, r * 16, r * 16);
+      continue;
+    }
+    if (ob.kind === 'moon') {
+      drawMoon(ctx, x, y, moonR, ob.phase, o.lat < 0);
+    } else {
+      const r = ob.size * o.scale;
+      ctx.drawImage(glowSprite, x - r * 4, y - r * 4, r * 8, r * 8);
+      ctx.fillStyle = ob.color;
+      ctx.beginPath();
+      ctx.arc(x, y, r, 0, Math.PI * 2);
+      ctx.fill();
+    }
+    if (labelAlpha > 0) {
+      ctx.globalAlpha = labelAlpha;
+      ctx.fillStyle = ob.kind === 'moon' ? '#ece8f4' : ob.color;
+      ctx.font = `500 ${11 * o.scale}px "Hanken Grotesk", system-ui, sans-serif`;
+      ctx.textAlign = 'left';
+      const lx = x + (ob.kind === 'moon' ? moonR + 4 * o.scale : 7 * o.scale), lw = ctx.measureText(ob.name).width;
+      ctx.fillText(ob.name, lx, y + 4 * o.scale);
+      placed.push([lx + lw / 2, y + 4 * o.scale, lw + 6 * o.scale]);
+    }
+  }
+}
+
+function drawStarLabels(ctx, toXY, o, placed, alpha, minAlt) {
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = '#c9cbe6';
+  ctx.font = `italic 500 ${12 * o.scale}px Cormorant, Georgia, serif`;
+  ctx.textAlign = 'center';
+  // Las más brillantes primero; se saltean las etiquetas que se pisarían.
+  for (const [name, ra, dec] of SKY.labels) {
+    const d = dec * DEG;
+    const [alt, az] = altAz(ra * DEG, Math.sin(d), Math.cos(d), o.L, o.sinLat, o.cosLat);
+    if (alt < minAlt) continue;
+    const p = toXY(alt, az);
+    if (!p) continue;
+    const [x, y] = p;
+    const w = ctx.measureText(name).width + 6 * o.scale, h = 13 * o.scale, ty = y + 14 * o.scale;
+    if (placed.some((b) => Math.abs(b[0] - x) < (b[2] + w) / 2 && Math.abs(b[1] - ty) < h)) continue;
+    placed.push([x, ty, w]);
+    ctx.fillText(name, x, ty);
+  }
+}
+
+function drawLines(ctx, toXY, o, alpha, minAlt) {
+  if (alpha <= 0) return;
+  ctx.globalAlpha = 1;
+  ctx.strokeStyle = `rgba(190,198,255,${alpha})`;
+  ctx.lineWidth = 0.8;
+  ctx.beginPath();
+  for (const seg of LINES) {
+    let pen = false;
+    for (let i = 0; i < seg.length; i += 2) {
+      const [alt, az] = altAz(seg[i], Math.sin(seg[i + 1]), Math.cos(seg[i + 1]), o.L, o.sinLat, o.cosLat);
+      const p = alt < minAlt ? null : toXY(alt, az);
+      if (!p) { pen = false; continue; }
+      if (pen) ctx.lineTo(p[0], p[1]); else ctx.moveTo(p[0], p[1]);
+      pen = true;
+    }
+  }
+  ctx.stroke();
+}
+
+function skyFrame(o) {
+  return { ...o, L: lst(o.date, o.lon), sinLat: Math.sin(o.lat * DEG), cosLat: Math.cos(o.lat * DEG),
+    scale: o.starScale || 1, reveal: o.reveal == null ? 1 : o.reveal };
+}
+
 /*
  * Cielo completo visto desde un lugar: proyección estereográfica centrada en el cénit.
  * El horizonte es un círculo de radio R. En el hemisferio sur el sur queda arriba.
  */
-function renderSky(ctx, o) {
-  const { cx, cy, R, lat, date, lon } = o;
-  const scale = o.starScale || 1;
-  const reveal = o.reveal == null ? 1 : o.reveal;
-  const flip = lat < 0 ? -1 : 1;
-  const sinLat = Math.sin(lat * DEG), cosLat = Math.cos(lat * DEG);
-  const L = lst(date, lon);
-  const project = (alt, az) => {
+function renderSky(ctx, opts) {
+  const o = skyFrame(opts);
+  const { cx, cy, R } = o;
+  const flip = o.lat < 0 ? -1 : 1;
+  const toXY = (alt, az) => {
     const r = R * Math.tan((Math.PI / 2 - alt) / 2);
     return [cx - flip * r * Math.sin(az), cy - flip * r * Math.cos(az)];
   };
   const minAlt = o.ring ? 0 : -0.35;
+  const look = o.ring && o.sunAlt != null ? skyLook(o.sunAlt) : null;
 
   ctx.save();
   if (o.ring) {
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     const g = ctx.createRadialGradient(cx, cy, R * 0.2, cx, cy, R);
-    g.addColorStop(0, 'rgba(14,21,49,0.95)');
-    g.addColorStop(0.82, 'rgba(18,24,58,0.95)');
-    g.addColorStop(1, 'rgba(58,52,118,0.9)');
+    if (look && look.day) {
+      g.addColorStop(0, rgb(look.top, 0.95));
+      g.addColorStop(1, rgb(look.horizon, 0.95));
+    } else {
+      g.addColorStop(0, 'rgba(14,21,49,0.95)');
+      g.addColorStop(0.82, 'rgba(18,24,58,0.95)');
+      g.addColorStop(1, 'rgba(58,52,118,0.9)');
+    }
     ctx.fillStyle = g;
     ctx.fill();
     ctx.clip();
   }
+  drawLines(ctx, toXY, o, clamp((o.reveal - 0.45) / 0.35, 0, 1) * (o.lineAlpha ?? 0.22), minAlt - 0.1);
 
-  // Líneas de constelaciones
-  const lineAlpha = Math.max(0, Math.min(1, (reveal - 0.45) / 0.35)) * (o.lineAlpha ?? 0.22);
-  if (lineAlpha > 0) {
-    ctx.strokeStyle = `rgba(190,198,255,${lineAlpha})`;
-    ctx.lineWidth = 0.8;
-    ctx.beginPath();
-    for (const seg of LINES) {
-      let pen = false;
-      for (let i = 0; i < seg.length; i += 2) {
-        const [alt, az] = altAz(seg[i], Math.sin(seg[i + 1]), Math.cos(seg[i + 1]), L, sinLat, cosLat);
-        if (alt < minAlt - 0.1) { pen = false; continue; }
-        const [x, y] = project(alt, az);
-        if (pen) ctx.lineTo(x, y); else ctx.moveTo(x, y);
-        pen = true;
-      }
-    }
-    ctx.stroke();
-  }
-
-  // Estrellas: las más brillantes aparecen primero
-  const magLimit = -1.5 + reveal * 7;
+  const magLimit = -1.5 + o.reveal * 7;
+  const dayAlpha = look ? look.starAlpha : 1;
   for (let i = 0; i < STARS.n; i++) {
     const m = STARS.mag[i];
     if (m > magLimit) break;
-    const [alt, az] = altAz(STARS.ra[i], STARS.sd[i], STARS.cd[i], L, sinLat, cosLat);
+    const [alt, az] = altAz(STARS.ra[i], STARS.sd[i], STARS.cd[i], o.L, o.sinLat, o.cosLat);
     if (alt < minAlt) continue;
-    const [x, y] = project(alt, az);
+    const [x, y] = toXY(alt, az);
     const fade = Math.min(1, (magLimit - m) / 1.2);
     const extinction = alt < 0.2 ? 0.45 + alt * 2.7 : 1;
-    const r = Math.max(0.45, (5.8 - m) * 0.42) * scale;
-    ctx.globalAlpha = Math.max(0, Math.min(1, (m < 4 ? 1 : 0.55 + (5.5 - m) * 0.3) * fade * extinction));
-    ctx.fillStyle = STARS.col[i];
-    if (m < 1.8) {
-      const gs = r * 7;
-      ctx.drawImage(glowSprite, x - gs / 2, y - gs / 2, gs, gs);
-    }
-    ctx.beginPath();
-    ctx.arc(x, y, r, 0, Math.PI * 2);
-    ctx.fill();
+    drawStarDot(ctx, x, y, m, STARS.col[i], o.scale, clamp((m < 4 ? 1 : 0.55 + (5.5 - m) * 0.3) * fade * extinction * dayAlpha, 0, 1));
   }
   ctx.globalAlpha = 1;
 
-  // Planetas, Luna y etiquetas
-  const labelAlpha = Math.max(0, Math.min(1, (reveal - 0.75) / 0.25));
+  const labelAlpha = clamp((o.reveal - 0.75) / 0.25, 0, 1);
   const placed = [];
-  if (o.objects) {
-    for (const ob of o.objects) {
-      const d = ob.dec * DEG;
-      const [alt, az] = altAz(ob.ra * DEG, Math.sin(d), Math.cos(d), L, sinLat, cosLat);
-      if (alt < 0) continue;
-      const [x, y] = project(alt, az);
-      ctx.globalAlpha = Math.min(1, reveal * 1.6);
-      if (ob.kind === 'moon') {
-        drawMoon(ctx, x, y, 7 * scale, ob.phase, lat < 0);
-      } else {
-        const r = ob.size * scale;
-        ctx.drawImage(glowSprite, x - r * 4, y - r * 4, r * 8, r * 8);
-        ctx.fillStyle = ob.color;
-        ctx.beginPath();
-        ctx.arc(x, y, r, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      if (labelAlpha > 0) {
-        ctx.globalAlpha = labelAlpha;
-        ctx.fillStyle = ob.kind === 'moon' ? '#ece8f4' : ob.color;
-        ctx.font = `500 ${11 * scale}px "Hanken Grotesk", system-ui, sans-serif`;
-        ctx.textAlign = 'left';
-        const lx = x + (ob.kind === 'moon' ? 11 : 7) * scale, lw = ctx.measureText(ob.name).width;
-        ctx.fillText(ob.name, lx, y + 4 * scale);
-        placed.push([lx + lw / 2, y + 4 * scale, lw + 6 * scale]);
-      }
-    }
-  }
-  if (o.labels && labelAlpha > 0) {
-    ctx.globalAlpha = labelAlpha * 0.7;
-    ctx.fillStyle = '#c9cbe6';
-    ctx.font = `italic 500 ${12 * scale}px Cormorant, Georgia, serif`;
-    ctx.textAlign = 'center';
-    // Las más brillantes primero; se saltean las etiquetas que se pisarían.
-    for (const [name, ra, dec] of SKY.labels) {
-      const d = dec * DEG;
-      const [alt, az] = altAz(ra * DEG, Math.sin(d), Math.cos(d), L, sinLat, cosLat);
-      if (alt < 0.12) continue;
-      const [x, y] = project(alt, az);
-      const w = ctx.measureText(name).width + 6 * scale, h = 13 * scale, ty = y + 14 * scale;
-      if (placed.some((b) => Math.abs(b[0] - x) < (b[2] + w) / 2 && Math.abs(b[1] - ty) < h)) continue;
-      placed.push([x, ty, w]);
-      ctx.fillText(name, x, ty);
-    }
-  }
+  if (o.objects) drawObjects(ctx, o.objects, toXY, o, placed, labelAlpha);
+  if (o.labels && labelAlpha > 0) drawStarLabels(ctx, toXY, o, placed, labelAlpha * 0.7, 0.12);
   ctx.restore();
 
   if (o.ring) {
     ctx.save();
-    ctx.globalAlpha = Math.min(1, reveal * 2);
+    ctx.globalAlpha = Math.min(1, o.reveal * 2);
     ctx.strokeStyle = 'rgba(190,198,255,0.28)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.arc(cx, cy, R, 0, Math.PI * 2);
     ctx.stroke();
     ctx.fillStyle = '#a2a4c2';
-    ctx.font = `500 ${10 * scale}px "IBM Plex Mono", monospace`;
+    ctx.font = `500 ${10 * o.scale}px "IBM Plex Mono", monospace`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
-    const pad = 12 * scale;
+    const pad = 12 * o.scale;
     for (const [label, az] of [['N', 0], ['E', 90], ['S', 180], ['O', 270]]) {
       const a = az * DEG;
       ctx.fillText(label, cx - flip * (R + pad) * Math.sin(a), cy - flip * (R + pad) * Math.cos(a));
     }
     ctx.restore();
+  }
+}
+
+/*
+ * Vista desde el patio: lo que verías parado en el suelo mirando hacia una dirección.
+ * Proyección estereográfica centrada en la dirección de la mirada, como un gran angular.
+ */
+const SILHOUETTE = (() => {
+  // Perfil del barrio en grados de altura cada medio grado de acimut: medianeras, casas
+  // con techo a dos aguas, tanques de agua, antenas, árboles y faroles. En 0° queda un claro.
+  const n = 720, h = new Float32Array(n);
+  let seed = 11;
+  const rnd = () => (seed = (seed * 16807) % 2147483647) / 2147483647;
+  for (let i = 0; i < n; i++) h[i] = 1.6 + 0.35 * Math.sin(i * 0.05) + 0.15 * Math.sin(i * 0.31);
+  const put = (c, w, fn) => {
+    for (let j = -w; j <= w; j++) {
+      const v = fn(w ? j / w : 0);
+      if (v == null) continue;
+      const i = ((c + j) % n + n) % n;
+      h[i] = Math.max(h[i], v);
+    }
+  };
+  let pos = 60;
+  while (pos < n - 80) {
+    const kind = rnd();
+    const w = Math.floor(14 + rnd() * 30);
+    const c = pos + w;
+    if (kind < 0.5) {
+      const wall = 3.2 + rnd() * 3, roof = rnd() < 0.55 ? wall + 1.5 + rnd() * 2.5 : wall;
+      put(c, w, (t) => wall + (roof - wall) * (1 - Math.abs(t)));
+      if (rnd() < 0.55) {
+        const tc = c + Math.floor((rnd() - 0.5) * w);
+        put(tc, 5, (t) => (Math.abs(t) < 0.8 ? wall + 2.6 : wall + 1.2));
+        put(tc, 6, (t) => wall + 3.1 - Math.abs(t) * 0.4);
+      }
+      if (rnd() < 0.35) {
+        const ac = c + Math.floor((rnd() - 0.5) * w);
+        put(ac, 0, () => roof + 7);
+        put(ac, 4, (t) => (Math.abs(Math.abs(t) - 0.6) < 0.25 ? roof + 5.2 : null));
+      }
+    } else if (kind < 0.85) {
+      const trunk = 2.5 + rnd() * 1.5, crown = 4 + rnd() * 5;
+      put(c, 1, () => trunk + 1);
+      put(c, w, (t) => {
+        const s = 1 - t * t;
+        if (s <= 0) return null;
+        return trunk + crown * Math.sqrt(s) * (0.85 + 0.15 * Math.sin(t * 23 + c));
+      });
+    } else {
+      const top = 6 + rnd() * 2;
+      put(c, 0, () => top);
+      put(c + 2, 2, () => top - 0.3);
+    }
+    pos += w * 2 + Math.floor(rnd() * 26);
+  }
+  return h;
+})();
+function silhouetteAlt(az, offset) {
+  let d = ((az - offset) / DEG) % 360;
+  if (d < 0) d += 360;
+  return SILHOUETTE[Math.round(d * 2) % 720] * 1.4 * DEG;
+}
+
+function horizVec(alt, az) {
+  const ca = Math.cos(alt);
+  return [ca * Math.sin(az), ca * Math.cos(az), Math.sin(alt)];
+}
+function makeView(az0, alt0, k, cx, cy) {
+  const f = horizVec(alt0, az0);
+  const r = [Math.cos(az0), -Math.sin(az0), 0];
+  const u = [r[1] * f[2] - r[2] * f[1], r[2] * f[0] - r[0] * f[2], r[0] * f[1] - r[1] * f[0]];
+  return (alt, az) => {
+    const v = horizVec(alt, az);
+    const d = v[0] * f[0] + v[1] * f[1] + v[2] * f[2];
+    if (d < -0.3) return null;
+    const s = k / (1 + d);
+    return [cx + s * (v[0] * r[0] + v[1] * r[1]), cy - s * (v[0] * u[0] + v[1] * u[1] + v[2] * u[2])];
+  };
+}
+
+function renderPOV(ctx, opts) {
+  const o = skyFrame(opts);
+  const { W, H, az0, alt0 } = o;
+  const k = (W / 2) / Math.tan((o.fov || 84) * DEG / 4);
+  const cy = H * (o.horizonAt || 0.6) - k * Math.tan(alt0 / 2);
+  const toXY = makeView(az0, alt0, k, W / 2, cy);
+  const look = skyLook(o.sunAlt);
+  const onScreen = (p) => p && p[0] > -40 && p[0] < W + 40 && p[1] > -40 && p[1] < H + 40;
+
+  // Cielo
+  const hz = toXY(0, az0);
+  const hy = hz ? hz[1] : H;
+  const g = ctx.createLinearGradient(0, Math.min(0, hy - H), 0, hy);
+  g.addColorStop(0, rgb(look.top));
+  g.addColorStop(0.7, rgb(mix(look.top, look.horizon, 0.45)));
+  g.addColorStop(1, rgb(look.horizon));
+  ctx.fillStyle = g;
+  ctx.fillRect(0, 0, W, H);
+  // Resplandor del Sol cerca del horizonte (crepúsculo o día)
+  if (o.sunAlt > -18) {
+    const sp = toXY(Math.max(o.sunAltRad, 0), o.sunAz);
+    if (sp) {
+      const sg = ctx.createRadialGradient(sp[0], sp[1], 0, sp[0], sp[1], W * 0.9);
+      sg.addColorStop(0, `rgba(255,190,140,${clamp(0.35 + o.sunAlt / 40, 0, 0.45)})`);
+      sg.addColorStop(1, 'rgba(255,190,140,0)');
+      ctx.fillStyle = sg;
+      ctx.fillRect(0, 0, W, H);
+    }
+  }
+  // Luces de la ciudad reflejadas en el horizonte
+  const lp = ctx.createLinearGradient(0, hy - H * 0.16, 0, hy);
+  lp.addColorStop(0, 'rgba(255,170,110,0)');
+  lp.addColorStop(1, `rgba(255,170,110,${look.day ? 0 : 0.09})`);
+  ctx.fillStyle = lp;
+  ctx.fillRect(0, hy - H * 0.16, W, H * 0.16);
+
+  drawLines(ctx, toXY, o, clamp((o.reveal - 0.5) / 0.35, 0, 1) * 0.16 * look.starAlpha, -0.05);
+
+  const magLimit = Math.min(look.magLimit, -1.5 + o.reveal * 7.5);
+  for (let i = 0; i < STARS.n; i++) {
+    const m = STARS.mag[i];
+    if (m > magLimit) break;
+    const [alt, az] = altAz(STARS.ra[i], STARS.sd[i], STARS.cd[i], o.L, o.sinLat, o.cosLat);
+    if (alt < -0.02) continue;
+    const p = toXY(alt, az);
+    if (!onScreen(p)) continue;
+    const fade = Math.min(1, (magLimit - m) / 1.2);
+    const extinction = alt < 0.25 ? 0.35 + alt * 2.6 : 1;
+    drawStarDot(ctx, p[0], p[1], m, STARS.col[i], o.scale, clamp((m < 4 ? 1 : 0.5 + (5.5 - m) * 0.3) * fade * extinction * look.starAlpha, 0, 1));
+  }
+  ctx.globalAlpha = 1;
+
+  const labelAlpha = clamp((o.reveal - 0.75) / 0.25, 0, 1);
+  const placed = [];
+  if (o.objects) drawObjects(ctx, o.objects, toXY, o, placed, labelAlpha);
+  if (o.highlight) {
+    const s = o.highlight;
+    const d = s.dec * DEG;
+    const [alt, az] = altAz(s.ra * DEG, Math.sin(d), Math.cos(d), o.L, o.sinLat, o.cosLat);
+    const p = alt > 0.05 ? toXY(alt, az) : null;
+    if (onScreen(p)) {
+      ctx.globalAlpha = labelAlpha;
+      ctx.strokeStyle = '#ffd29a';
+      ctx.lineWidth = 1.5 * o.scale;
+      ctx.beginPath();
+      ctx.arc(p[0], p[1], 11 * o.scale, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.fillStyle = '#ffd29a';
+      ctx.font = `500 ${11 * o.scale}px "Hanken Grotesk", system-ui, sans-serif`;
+      ctx.textAlign = 'center';
+      ctx.fillText(`Mi estrella · ${s.name}`, p[0], p[1] - 17 * o.scale);
+      placed.push([p[0], p[1] - 17 * o.scale, 120 * o.scale], [p[0], p[1] + 14 * o.scale, 30 * o.scale]);
+    }
+  }
+  if (labelAlpha > 0) drawStarLabels(ctx, toXY, o, placed, labelAlpha * 0.75 * Math.max(look.starAlpha, 0.5), 0.1);
+  ctx.globalAlpha = 1;
+
+  // Suelo y siluetas del barrio
+  const span = 140 * DEG;
+  const pts = [];
+  for (let a = -span; a <= span; a += 0.5 * DEG) {
+    const az = az0 + a;
+    const p = toXY(silhouetteAlt(az, o.silOffset || 0), az);
+    if (p) pts.push(p);
+  }
+  if (pts.length) {
+    const gg = ctx.createLinearGradient(0, hy - 60, 0, H);
+    gg.addColorStop(0, rgb(look.ground));
+    gg.addColorStop(1, rgb(mix(look.ground, [0, 0, 0], 0.5)));
+    ctx.fillStyle = gg;
+    ctx.beginPath();
+    ctx.moveTo(pts[0][0], H + 10);
+    for (const p of pts) ctx.lineTo(p[0], p[1]);
+    ctx.lineTo(pts[pts.length - 1][0], H + 10);
+    ctx.closePath();
+    ctx.fill();
+  }
+  // Puntos cardinales sobre el suelo
+  ctx.font = `500 ${10 * o.scale}px "IBM Plex Mono", monospace`;
+  ctx.textAlign = 'center';
+  ctx.fillStyle = 'rgba(162,164,194,0.75)';
+  for (let i = 0; i < 8; i++) {
+    const p = toXY(-2.2 * DEG, i * 45 * DEG);
+    if (p && p[0] > 10 && p[0] < W - 10 && p[1] < H) ctx.fillText(['N', 'NE', 'E', 'SE', 'S', 'SO', 'O', 'NO'][i], p[0], p[1]);
   }
 }
 
@@ -389,26 +639,36 @@ function astronomyReady() {
   });
 }
 
-function compute(y, m, d, city) {
+function compute(y, m, d, city, hh, mm) {
   const A = window.Astronomy;
   const obs = new A.Observer(city.lat, city.lon, 0);
   const noon = localToDate(y, m, d, 12, 0, city.tz);
-  const sunset = A.SearchRiseSet('Sun', obs, -1, noon, 1);
-  const when = sunset ? new Date(sunset.date.getTime() + 2 * 3600000) : localToDate(y, m, d, 22, 0, city.tz);
+  const knownTime = hh != null;
+  let when;
+  if (knownTime) {
+    when = localToDate(y, m, d, hh, mm, city.tz);
+  } else {
+    const sunset = A.SearchRiseSet('Sun', obs, -1, noon, 1);
+    when = sunset ? new Date(sunset.date.getTime() + 2 * 3600000) : localToDate(y, m, d, 22, 0, city.tz);
+  }
 
-  const objects = [];
+  const sunNow = A.Equator('Sun', when, obs, false, true);
+  const [sunAlt, sunAz] = altAzDeg(sunNow.ra * 15, sunNow.dec, when, city);
+  const objects = [{ name: 'Sol', kind: 'sun', ra: sunNow.ra * 15, dec: sunNow.dec }];
   const visible = [];
   for (const [body, name, color, size] of PLANETS) {
     const eq = A.Equator(body, when, obs, false, true);
     const ob = { name, color, size, ra: eq.ra * 15, dec: eq.dec, kind: 'planet' };
+    ob.alt = altAzDeg(ob.ra, ob.dec, when, city);
     objects.push(ob);
-    if (altAzDeg(ob.ra, ob.dec, when, city)[0] > 2) visible.push(name);
+    if (ob.alt[0] > 2) visible.push(name);
   }
   const moonEq = A.Equator('Moon', when, obs, false, true);
   const phase = A.MoonPhase(when);
   const moon = { name: 'Luna', kind: 'moon', phase, ra: moonEq.ra * 15, dec: moonEq.dec };
+  moon.alt = altAzDeg(moon.ra, moon.dec, when, city);
   objects.push(moon);
-  const moonUp = altAzDeg(moon.ra, moon.dec, when, city)[0] > 0;
+  const moonUp = moon.alt[0] > 0;
   const illum = A.Illumination('Moon', when).phase_fraction;
   const nextFull = A.SearchMoonPhase(180, when, 32).date;
   const lastNew = A.SearchMoonPhase(0, new Date(when.getTime() - 31 * MS_DAY), 32).date;
@@ -416,11 +676,31 @@ function compute(y, m, d, city) {
   const sunEq = A.Equator('Sun', noon, obs, false, true);
   const sunCon = A.Constellation(sunEq.ra, sunEq.dec).symbol;
 
-  const birth = noon;
+  const birth = knownTime ? when : noon;
   const now = new Date();
   const ageYears = (now - birth) / MS_DAY / YEAR_DAYS;
-  return { y, m, d, city, when, objects, visible, moon, moonUp, illum, nextFull, lastNew, sunEq, sunCon,
-    birth, now, ageYears, star: pickStar(ageYears, city.lat) };
+  const r = { y, m, d, city, knownTime, when, sunAlt, sunAz, objects, visible, moon, moonUp, illum, nextFull, lastNew,
+    sunEq, sunCon, birth, now, ageYears, star: pickStar(ageYears, city.lat) };
+  r.view = initialView(r);
+  return r;
+}
+
+// Hacia dónde mira la vista del patio al empezar: lo más lindo que había en el cielo.
+function initialView(r) {
+  const good = (alt) => alt > 8 && alt < 80;
+  let target = null;
+  if (r.sunAlt > 0 && good(r.sunAlt)) target = [r.sunAlt, r.sunAz];
+  else if (good(r.moon.alt[0])) target = r.moon.alt;
+  else {
+    const p = r.objects.find((o) => o.kind === 'planet' && good(o.alt[0]));
+    if (p) target = p.alt;
+  }
+  if (target == null) {
+    const s = SKY.labels.map(([, ra, dec]) => altAzDeg(ra, dec, r.when, r.city)).find(([alt]) => alt > 15 && alt < 60);
+    target = s || [30, r.city.lat < 0 ? 180 : 0];
+  }
+  // Un poco corrido para que el objeto no quede justo en el centro; el claro del barrio queda debajo.
+  return { az: (target[1] + 12) * DEG, alt: clamp(target[0] - 8, 24, 58) * DEG, silOffset: target[1] * DEG };
 }
 
 // La estrella cuya luz salió más cerca del momento en que naciste.
@@ -476,6 +756,7 @@ function colorWord(bv) {
   if (bv < 1.4) return 'anaranjada';
   return 'rojiza';
 }
+const sunConName = (r) => ZODIAC_ES[r.sunCon] || SKY.cons[r.sunCon];
 
 /* ---------- Fondo animado: el cielo de ahora, girando ---------- */
 
@@ -498,11 +779,13 @@ function drawBg() {
 /* ---------- Formulario ---------- */
 
 function fillForm() {
-  const day = $('day'), month = $('month'), year = $('year'), city = $('city');
+  const day = $('day'), month = $('month'), year = $('year'), city = $('city'), hour = $('hour'), minute = $('minute');
   for (let i = 1; i <= 31; i++) day.add(new Option(i, i));
   for (let i = 0; i < 12; i++) month.add(new Option(fmt(new Date(Date.UTC(2000, i, 15)), 'UTC', { month: 'long' }).replace(/^./, (c) => c.toUpperCase()), i));
   const thisYear = new Date().getFullYear();
   for (let i = thisYear; i >= 1930; i--) year.add(new Option(i, i));
+  for (let i = 0; i < 24; i++) hour.add(new Option(String(i).padStart(2, '0') + ' h', i));
+  for (let i = 0; i < 60; i += 5) minute.add(new Option(String(i).padStart(2, '0') + ' min', i));
   CITIES.forEach((c, i) => city.add(new Option(c.name, i)));
 
   const tz = Intl.DateTimeFormat().resolvedOptions().timeZone;
@@ -511,43 +794,51 @@ function fillForm() {
   try { saved = JSON.parse(localStorage.getItem('astrocodi') || 'null'); } catch (e) { /* sin almacenamiento */ }
   if (saved) {
     day.value = saved.d; month.value = saved.m; year.value = saved.y;
+    if (saved.hh != null) { hour.value = saved.hh; minute.value = saved.mm; }
     if (CITIES[saved.c]) idx = saved.c;
   }
   city.value = String(Math.max(0, idx));
   bgCity = CITIES[Math.max(0, idx)];
-  for (const s of [day, month, year]) {
+  for (const s of [day, month, year, hour, minute]) {
     const mark = () => s.classList.toggle('empty', !s.value);
     s.addEventListener('change', mark);
     mark();
   }
+  hour.addEventListener('change', () => {
+    if (hour.value && !minute.value) { minute.value = '0'; minute.classList.remove('empty'); }
+    if (!hour.value) { minute.value = ''; minute.classList.add('empty'); }
+  });
   city.addEventListener('change', () => { bgCity = CITIES[+city.value]; updateNowLabel(); if (reduceMotion) drawBg(); });
   updateNowLabel();
 }
 function updateNowLabel() {
-  $('now-label').textContent = `Cielo de ahora · ${bgCity.name} · ${fmt(new Date(), bgCity.tz, { hour: '2-digit', minute: '2-digit', hour12: false })}`;
+  $('now-label').textContent = `Cielo de ahora · ${bgCity.name} · ${fmtTime(new Date(), bgCity.tz)}`;
 }
 
 $('form').addEventListener('submit', async (e) => {
   e.preventDefault();
   const d = +$('day').value, m = $('month').value, y = +$('year').value;
+  const hh = $('hour').value === '' ? null : +$('hour').value;
+  const mm = hh == null ? 0 : +($('minute').value || 0);
   const err = $('error');
   err.hidden = true;
   if (!d || m === '' || !y) { err.textContent = 'Elegí día, mes y año.'; err.hidden = false; return; }
-  const date = new Date(y, +m, d);
+  const date = new Date(y, +m, d, hh ?? 0, mm);
   if (date.getMonth() !== +m) { err.textContent = `Ese mes no tiene ${d} días.`; err.hidden = false; return; }
   if (date > new Date()) { err.textContent = 'Esa fecha todavía no llegó.'; err.hidden = false; return; }
   const cityIdx = +$('city').value;
-  try { localStorage.setItem('astrocodi', JSON.stringify({ d, m, y, c: cityIdx })); } catch (e2) { /* sin almacenamiento */ }
+  try { localStorage.setItem('astrocodi', JSON.stringify({ d, m, y, c: cityIdx, hh, mm })); } catch (e2) { /* sin almacenamiento */ }
 
   const btn = $('go');
   btn.disabled = true;
   btn.textContent = 'Calculando tu cielo…';
   try {
     await astronomyReady();
-    data = compute(y, +m, d, CITIES[cityIdx]);
+    data = compute(y, +m, d, CITIES[cityIdx], hh, mm);
     fillStories(data);
     openStories();
   } catch (ex) {
+    console.error(ex);
     err.textContent = 'No pudimos cargar los datos astronómicos. Revisá tu conexión y probá de nuevo.';
     err.hidden = false;
   } finally {
@@ -563,19 +854,37 @@ let current = 0;
 let storyRaf = 0;
 const stories = [...document.querySelectorAll('.story')];
 const bars = $('bars');
-stories.forEach(() => { const s = document.createElement('span'); s.appendChild(document.createElement('i')); bars.appendChild(s); });
+stories.forEach((s, i) => {
+  const b = document.createElement('span');
+  b.appendChild(document.createElement('i'));
+  bars.appendChild(b);
+  if (i < TEASERS.length) {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'next-btn';
+    btn.innerHTML = `<span>${TEASERS[i]}</span><svg viewBox="0 0 24 24" width="18" height="18" aria-hidden="true"><path d="M5 12h13M13 6l6 6-6 6" stroke="currentColor" stroke-width="1.7" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>`;
+    btn.addEventListener('click', () => go(i + 1));
+    s.querySelector('.copy').appendChild(btn);
+  }
+});
 
 function fillStories(r) {
   const { city } = r;
   const dateTxt = fmt(r.when, city.tz, { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\./g, '');
-  const hourTxt = fmt(r.when, city.tz, { hour: '2-digit', minute: '2-digit', hour12: false });
+  const hourTxt = fmtTime(r.when, city.tz);
   $('s1-eyebrow').textContent = `${dateTxt} · ${hourTxt} · ${city.name}`;
 
   const seen = [...r.visible];
   if (r.moonUp) seen.push('la Luna');
+  const verb = seen.length === 1 ? 'estaba' : 'estaban';
   let s1;
-  if (seen.length) {
-    s1 = `Dos horas después de la puesta del Sol se ${seen.length === 1 ? 'veía' : 'veían'} <strong>${listEs(seen)}</strong> sobre ${city.name}.`;
+  if (r.knownTime && r.sunAlt > 0) {
+    s1 = `Naciste de día, con el Sol a ${Math.round(r.sunAlt)}° de altura. Detrás del azul ${seen.length ? `${verb} <strong>${listEs(seen)}</strong> y` : 'estaban'} estas estrellas, aunque nadie las podía ver.`;
+  } else if (r.knownTime && r.sunAlt > -12) {
+    s1 = `Naciste en el crepúsculo, con el Sol apenas debajo del horizonte.${seen.length ? ` Ya ${seen.length === 1 ? 'asomaba' : 'asomaban'} <strong>${listEs(seen)}</strong>.` : ''}`;
+  } else if (seen.length) {
+    const lead = r.knownTime ? `A las ${hourTxt}, la hora en que naciste,` : 'Dos horas después de la puesta del Sol';
+    s1 = `${lead} se ${seen.length === 1 ? 'veía' : 'veían'} <strong>${listEs(seen)}</strong> sobre ${city.name}.`;
   } else {
     const bright = SKY.labels.filter(([, ra, dec]) => altAzDeg(ra, dec, r.when, city)[0] > 15).slice(0, 2).map((l) => l[0]);
     s1 = `Esa noche los planetas estaban del otro lado del cielo, pero brillaban <strong>${listEs(bright)}</strong>.`;
@@ -602,13 +911,12 @@ function fillStories(r) {
   $('s3-where').textContent = whereToSee(st, city);
 
   const sign = tropicalSign(r.m, r.d);
-  const real = ZODIAC_ES[r.sunCon] || SKY.cons[r.sunCon];
-  $('s4-old').textContent = `El horóscopo dice ${sign}.`;
-  $('s4-title').textContent = `El Sol estaba en ${real}.`;
-  let s4;
-  if (r.sunCon === 'Oph') s4 = 'Ofiuco es la constelación número trece. El Sol la cruza todos los años, pero los horóscopos nunca la incluyeron.';
-  else if (real === sign) s4 = 'Esta vez coinciden. Igual, el cielo se fue corriendo: el eje de la Tierra cambia de dirección muy despacio y en 2.000 años el zodíaco se desplazó casi un signo entero.';
-  else s4 = 'El eje de la Tierra cambia de dirección muy despacio (se llama precesión). En 2.000 años el zodíaco se corrió casi un signo, y los horóscopos siguen usando el cielo de la Antigüedad.';
+  const real = sunConName(r);
+  $('s4-title').textContent = `El Sol estaba frente a ${real}.`;
+  let s4 = 'Visto desde la Tierra, el Sol recorre las constelaciones a lo largo del año. El día que naciste tenía detrás a esta, aunque su luz no dejaba verla. ';
+  if (r.sunCon === 'Oph') s4 += 'Ofiuco es la constelación que el Sol cruza y los horóscopos nunca incluyeron.';
+  else if (real === sign) s4 += `El horóscopo también dice ${sign}: esta vez coinciden.`;
+  else s4 += `El horóscopo diría ${sign}, pero usa el cielo de hace 2.000 años: el eje de la Tierra fue cambiando de dirección (precesión) y el cielo se corrió casi una constelación.`;
   $('s4-text').textContent = s4;
 
   const days = Math.floor((r.now - r.birth) / MS_DAY);
@@ -619,6 +927,9 @@ function fillStories(r) {
     [nf1.format(r.ageYears / 11.862), 'años en Júpiter'],
   ];
   $('s5-stats').innerHTML = stats.map(([v, l]) => `<div><dt>${l}</dt><dd>${v}</dd></div>`).join('');
+  $('card').removeAttribute('data-for');
+  pov = { az: r.view.az, alt: r.view.alt, vaz: 0, valt: 0, dragged: false };
+  setSkyMode('pov');
 }
 
 function whereToSee(st, city) {
@@ -644,12 +955,12 @@ function openStories() {
   cancelAnimationFrame(bgRaf);
   $('intro').hidden = true;
   $('stories').hidden = false;
-  $('nudge').hidden = false;
   go(0);
 }
 function closeStories() {
   cancelAnimationFrame(storyRaf);
   $('stories').hidden = true;
+  $('sheet').hidden = true;
   $('intro').hidden = false;
   bgRunning = true;
   sizeBg();
@@ -658,7 +969,6 @@ function closeStories() {
 
 function go(i) {
   if (i < 0 || i >= stories.length) return;
-  if (i > 0) $('nudge').hidden = true;
   current = i;
   stories.forEach((s, k) => {
     s.classList.toggle('on', k === i);
@@ -667,7 +977,7 @@ function go(i) {
   });
   [...bars.children].forEach((b, k) => { b.classList.toggle('done', k < i); b.classList.toggle('on', k === i); });
   cancelAnimationFrame(storyRaf);
-  requestAnimationFrame(() => [playDome, playMoon, playStar, playBand, playStats, playCard][i]());
+  requestAnimationFrame(() => [playSky, playMoon, playStar, playBand, playStats, playCard][i]());
 }
 
 $('tap-next').addEventListener('click', () => go(current + 1));
@@ -705,22 +1015,94 @@ function animate(duration, frame) {
 }
 const ease = (p) => 1 - Math.pow(1 - p, 3);
 
-function playDome() {
-  const c = $('dome');
-  const { w, h } = visualBox(c);
-  const size = Math.min(w, h);
-  const ctx = setupCanvas(c, size, size);
-  const R = size / 2 - 22;
-  animate(2600, (p, ms) => {
-    ctx.clearRect(0, 0, size, size);
+/* ---------- Historia 1: el cielo, desde el patio o completo ---------- */
+
+let pov = { az: 0, alt: 26 * DEG, vaz: 0, valt: 0, dragged: false };
+let skyMode = 'pov';
+let skyT0 = 0;
+function setSkyMode(mode) {
+  skyMode = mode;
+  document.querySelectorAll('#sky-mode button').forEach((b) => b.setAttribute('aria-pressed', String(b.dataset.mode === mode)));
+  $('drag-hint').hidden = mode !== 'pov' || pov.dragged;
+}
+document.querySelectorAll('#sky-mode button').forEach((b) => b.addEventListener('click', () => {
+  setSkyMode(b.dataset.mode);
+  if (current === 0) { cancelAnimationFrame(storyRaf); playSky(true); }
+}));
+
+function playSky(instant) {
+  instant = instant === true;
+  const c = $('sky');
+  const W = c.parentElement.clientWidth, H = c.parentElement.clientHeight;
+  const ctx = setupCanvas(c, W, H);
+  // El horizonte queda justo arriba del texto, así el suelo oscuro hace de fondo para leer.
+  const copyTop = c.closest('.story').querySelector('.copy').getBoundingClientRect().top - c.getBoundingClientRect().top;
+  const horizonAt = clamp((copyTop - 6) / H, 0.38, 0.64);
+  if (!instant) skyT0 = performance.now();
+  const azFrom = pov.az - 28 * DEG;
+  animate(instant ? 1 : 2800, (p) => {
+    const e = instant ? 1 : ease(p);
     // Después de aparecer, el cielo sigue girando despacio, como esa noche.
-    const drift = reduceMotion ? 0 : Math.max(0, ms - 2600) * 20;
-    renderSky(ctx, { cx: size / 2, cy: size / 2, R, lat: data.city.lat, lon: data.city.lon,
-      date: new Date(data.when.getTime() + drift), reveal: ease(p), ring: true, objects: data.objects, labels: true,
-      starScale: Math.max(0.8, size / 380) });
-    return !reduceMotion;
+    const drift = reduceMotion ? 0 : Math.max(0, performance.now() - skyT0 - 2800) * 12;
+    const date = new Date(data.when.getTime() + drift);
+    if (skyMode === 'pov') {
+      if (!pointer.down) {
+        pov.az += pov.vaz;
+        pov.alt = clamp(pov.alt + pov.valt, 4 * DEG, 85 * DEG);
+        pov.vaz *= 0.93;
+        pov.valt *= 0.93;
+      }
+      const az = p < 1 && !pov.dragged && !instant ? azFrom + (pov.az - azFrom) * e : pov.az;
+      renderPOV(ctx, { W, H, az0: az, alt0: pov.alt, lat: data.city.lat, lon: data.city.lon, date, reveal: e,
+        objects: data.objects, sunAlt: data.sunAlt, sunAltRad: data.sunAlt * DEG, sunAz: data.sunAz * DEG,
+        silOffset: data.view.silOffset, starScale: Math.max(1.1, W / 330), moonR: 9, horizonAt });
+    } else {
+      ctx.clearRect(0, 0, W, H);
+      const top = 64, avail = H * 0.56 - top;
+      const size = Math.min(W - 40, avail);
+      renderSky(ctx, { cx: W / 2, cy: top + avail / 2, R: size / 2 - 14, lat: data.city.lat, lon: data.city.lon, date,
+        reveal: e, ring: true, objects: data.objects, labels: true, sunAlt: data.sunAlt, starScale: Math.max(0.8, size / 380) });
+    }
+    return !reduceMotion || pointer.down || Math.abs(pov.vaz) + Math.abs(pov.valt) > 1e-4;
   });
 }
+
+// Arrastrar para mirar alrededor. Un toque sin arrastre avanza o retrocede como en el resto.
+const pointer = { down: false, x: 0, y: 0, t: 0, moved: 0 };
+const skyCanvas = $('sky');
+skyCanvas.addEventListener('pointerdown', (e) => {
+  pointer.down = true; pointer.x = e.clientX; pointer.y = e.clientY; pointer.t = performance.now(); pointer.moved = 0;
+  try { skyCanvas.setPointerCapture(e.pointerId); } catch (err) { /* sin captura */ }
+  pov.vaz = pov.valt = 0;
+});
+skyCanvas.addEventListener('pointermove', (e) => {
+  if (!pointer.down || skyMode !== 'pov') return;
+  const dx = e.clientX - pointer.x, dy = e.clientY - pointer.y;
+  pointer.x = e.clientX; pointer.y = e.clientY;
+  pointer.moved += Math.abs(dx) + Math.abs(dy);
+  const k = (skyCanvas.clientWidth / 2) / Math.tan(84 * DEG / 4);
+  pov.vaz = -dx / k * 1.15;
+  pov.valt = dy / k * 1.15;
+  pov.az += pov.vaz;
+  pov.alt = clamp(pov.alt + pov.valt, 4 * DEG, 85 * DEG);
+  if (pointer.moved > 8 && !pov.dragged) { pov.dragged = true; $('drag-hint').hidden = true; }
+  if (reduceMotion) playSky(true);
+});
+const endPointer = (e) => {
+  if (!pointer.down) return;
+  pointer.down = false;
+  if (pointer.moved < 8 && performance.now() - pointer.t < 400) {
+    go(current + (e.clientX < window.innerWidth * 0.3 ? -1 : 1));
+  } else if (!reduceMotion) {
+    cancelAnimationFrame(storyRaf);
+    playSky(true);
+  }
+};
+skyCanvas.addEventListener('pointerup', endPointer);
+skyCanvas.addEventListener('pointercancel', () => { pointer.down = false; });
+for (const ev of ['touchstart', 'touchend']) skyCanvas.addEventListener(ev, (e) => e.stopPropagation(), { passive: true });
+
+/* ---------- Historias 2 a 5 ---------- */
 
 function playMoon() {
   const c = $('moon');
@@ -747,8 +1129,7 @@ function playStar() {
   const { w, h } = visualBox(c);
   const size = Math.min(w, h, 320);
   const ctx = setupCanvas(c, size, size);
-  const col = bvColor(data.star.bv);
-  const rgb = col.match(/\d+/g).join(',');
+  const col = bvColor(data.star.bv).match(/\d+/g).join(',');
   animate(1400, (p, ms) => {
     ctx.clearRect(0, 0, size, size);
     const cx = size / 2, cy = size / 2;
@@ -756,13 +1137,13 @@ function playStar() {
     const R = size * 0.42 * ease(p) * pulse;
     const g = ctx.createRadialGradient(cx, cy, 0, cx, cy, R);
     g.addColorStop(0, 'rgba(255,255,255,1)');
-    g.addColorStop(0.06, `rgba(${rgb},0.95)`);
-    g.addColorStop(0.22, `rgba(${rgb},0.28)`);
-    g.addColorStop(1, `rgba(${rgb},0)`);
+    g.addColorStop(0.06, `rgba(${col},0.95)`);
+    g.addColorStop(0.22, `rgba(${col},0.28)`);
+    g.addColorStop(1, `rgba(${col},0)`);
     ctx.fillStyle = g;
     ctx.fillRect(0, 0, size, size);
     // Picos de difracción, como en una foto de telescopio
-    ctx.strokeStyle = `rgba(${rgb},${0.35 * ease(p)})`;
+    ctx.strokeStyle = `rgba(${col},${0.35 * ease(p)})`;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(cx - R, cy); ctx.lineTo(cx + R, cy);
@@ -787,8 +1168,7 @@ function playBand() {
   const sy = (beta) => bh / 2 - (beta - sunBeta) / (span * bh / bw) * (bh / 2);
   const stars = [];
   for (let i = 0; i < STARS.n; i++) {
-    const dec = Math.asin(STARS.sd[i]);
-    const [lam, beta] = toEcliptic(STARS.ra[i], dec);
+    const [lam, beta] = toEcliptic(STARS.ra[i], Math.asin(STARS.sd[i]));
     const x = sx(lam), y = sy(beta);
     if (x > -10 && x < bw + 10 && y > -10 && y < bh + 10) stars.push([x, y, STARS.mag[i], STARS.col[i]]);
   }
@@ -800,7 +1180,7 @@ function playBand() {
     }
     return pts;
   }).filter((pts) => pts.some(([x, y]) => x > 0 && x < bw && y > 0 && y < bh));
-  const name = (ZODIAC_ES[data.sunCon] || SKY.cons[data.sunCon]).toUpperCase();
+  const name = sunConName(data).toUpperCase();
 
   animate(1800, (p) => {
     ctx.clearRect(0, 0, bw, bh);
@@ -883,7 +1263,7 @@ function playStats() {
     octx.fillStyle = '#a2a4c2';
     octx.font = '500 10px "IBM Plex Mono", monospace';
     octx.textAlign = 'center';
-    octx.fillText(`VUELTA ${Math.floor(laps) + 1} · ${Math.round(frac * 100)}%`, cx, cy + ry + 18 > oh - 4 ? oh - 4 : cy + ry + 18);
+    octx.fillText(`VUELTA ${Math.floor(laps) + 1} · ${Math.round(frac * 100)}%`, cx, Math.min(oh - 4, cy + ry + 18));
     const km = p < 1 ? startKm * ease(p) : startKm + ((performance.now() - t0 - 1800) / 1000) * EARTH_KMS;
     el.textContent = nf.format(Math.floor(km));
     return !reduceMotion;
@@ -892,86 +1272,183 @@ function playStats() {
 
 /* ---------- Tarjeta para compartir (1080 × 1920, formato historia) ---------- */
 
+let cardStyle = 'pov';
 let cardBlob = null;
+document.querySelectorAll('#card-style button').forEach((b) => b.addEventListener('click', () => {
+  cardStyle = b.dataset.style;
+  document.querySelectorAll('#card-style button').forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
+  playCard();
+}));
+
+function drawSticker(ctx, x, y, text) {
+  ctx.save();
+  ctx.translate(x, y);
+  ctx.rotate(-3 * DEG);
+  ctx.font = '600 44px "Hanken Grotesk", system-ui, sans-serif';
+  const w = ctx.measureText(text).width + 84, h = 96;
+  ctx.shadowColor = 'rgba(255,190,110,0.55)';
+  ctx.shadowBlur = 40;
+  const g = ctx.createLinearGradient(0, -h / 2, 0, h / 2);
+  g.addColorStop(0, '#fff1d8');
+  g.addColorStop(1, '#ffc97e');
+  ctx.fillStyle = g;
+  ctx.beginPath();
+  if (ctx.roundRect) ctx.roundRect(-w / 2, -h / 2, w, h, h / 2);
+  else ctx.rect(-w / 2, -h / 2, w, h);
+  ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.fillStyle = '#1a1408';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, 0, 2);
+  ctx.restore();
+}
+
+function drawRows(ctx, rows, y0, step, W, rules) {
+  let y = y0;
+  ctx.strokeStyle = 'rgba(190,196,255,0.18)';
+  ctx.lineWidth = 2;
+  for (const [k, v] of rows) {
+    if (rules) { ctx.beginPath(); ctx.moveTo(120, y - 50); ctx.lineTo(W - 120, y - 50); ctx.stroke(); }
+    ctx.textAlign = 'left';
+    ctx.fillStyle = '#a2a4c2';
+    ctx.font = '500 26px "IBM Plex Mono", monospace';
+    ctx.fillText(k, 120, y);
+    ctx.textAlign = 'right';
+    ctx.fillStyle = '#ece8f4';
+    ctx.font = 'italic 500 46px Cormorant, Georgia, serif';
+    ctx.fillText(v, W - 120, y + 4);
+    y += step;
+  }
+}
+
 async function playCard() {
   const img = $('card');
-  if (img.dataset.for === cardKey()) return;
+  const key = `${cardKey()}-${cardStyle}`;
+  if (img.dataset.for === key) return;
   try { await document.fonts.ready; } catch (e) { /* sigue con fuentes del sistema */ }
   const W = 1080, H = 1920;
   const c = document.createElement('canvas');
   c.width = W; c.height = H;
   const ctx = c.getContext('2d');
-  const g = ctx.createLinearGradient(0, 0, 0, H);
-  g.addColorStop(0, '#0e1531');
-  g.addColorStop(0.55, '#070b1a');
-  g.addColorStop(1, '#151033');
-  ctx.fillStyle = g;
-  ctx.fillRect(0, 0, W, H);
-
-  ctx.fillStyle = '#ece8f4';
-  ctx.font = '600 38px Cormorant, Georgia, serif';
-  ctx.textAlign = 'center';
-  ctx.fillText('A S T R O C O D I', W / 2, 130);
-
-  renderSky(ctx, { cx: W / 2, cy: 620, R: 400, lat: data.city.lat, lon: data.city.lon, date: data.when, ring: true,
-    objects: data.objects, labels: true, starScale: 2.3 });
-
   const { city } = data;
-  ctx.fillStyle = '#ffd29a';
-  ctx.font = '500 30px "IBM Plex Mono", monospace';
-  ctx.fillText(`${fmt(data.when, city.tz, { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\./g, '').toUpperCase()} · ${city.name.toUpperCase()}`, W / 2, 1120);
-  ctx.fillStyle = '#ece8f4';
-  ctx.font = '500 84px Cormorant, Georgia, serif';
-  ctx.fillText('El cielo de la noche', W / 2, 1220);
-  ctx.fillText('en que nací', W / 2, 1305);
-
+  const dateLine = `${fmt(data.when, city.tz, { day: 'numeric', month: 'short', year: 'numeric' }).replace(/\./g, '').toUpperCase()} · ${fmtTime(data.when, city.tz)} · ${city.name.toUpperCase()}`;
   const rows = [
     ['MI ESTRELLA', `${data.star.name} · ${nf1.format(data.star.ly)} años luz`],
-    ['MI SIGNO REAL', ZODIAC_ES[data.sunCon] || SKY.cons[data.sunCon]],
     ['MI LUNA', `${moonPhaseName(data.moon.phase)} · ${Math.round(data.illum * 100)}%`],
+    ['EL SOL EN', sunConName(data)],
   ];
-  let y = 1440;
-  ctx.strokeStyle = 'rgba(190,196,255,0.18)';
-  ctx.lineWidth = 2;
-  for (const [k, v] of rows) {
-    ctx.beginPath(); ctx.moveTo(140, y - 62); ctx.lineTo(W - 140, y - 62); ctx.stroke();
-    ctx.textAlign = 'left';
-    ctx.fillStyle = '#a2a4c2';
-    ctx.font = '500 26px "IBM Plex Mono", monospace';
-    ctx.fillText(k, 140, y);
-    ctx.textAlign = 'right';
+  const cta = `¿Y el tuyo? → @${INSTAGRAM}`;
+
+  if (cardStyle === 'pov') {
+    renderPOV(ctx, { W, H, az0: data.view.az, alt0: data.view.alt + 4 * DEG, fov: 92, horizonAt: 0.6, lat: city.lat, lon: city.lon,
+      date: data.when, objects: data.objects, sunAlt: data.sunAlt, sunAltRad: data.sunAlt * DEG, sunAz: data.sunAz * DEG,
+      silOffset: data.view.silOffset, starScale: 2.6, moonR: 9, highlight: data.star });
+    const top = ctx.createLinearGradient(0, 0, 0, 420);
+    top.addColorStop(0, 'rgba(4,6,15,0.85)');
+    top.addColorStop(1, 'rgba(4,6,15,0)');
+    ctx.fillStyle = top;
+    ctx.fillRect(0, 0, W, 420);
+    ctx.textAlign = 'center';
     ctx.fillStyle = '#ece8f4';
-    ctx.font = 'italic 500 50px Cormorant, Georgia, serif';
-    ctx.fillText(v, W - 140, y + 4);
-    y += 118;
+    ctx.font = '600 36px Cormorant, Georgia, serif';
+    ctx.fillText('A S T R O C O D I', W / 2, 120);
+    ctx.fillStyle = '#ffd29a';
+    ctx.font = '500 30px "IBM Plex Mono", monospace';
+    ctx.fillText(dateLine, W / 2, 180);
+    ctx.fillStyle = '#ece8f4';
+    ctx.font = '500 112px Cormorant, Georgia, serif';
+    ctx.fillText('Así estaba el cielo', W / 2, 1300);
+    ctx.font = 'italic 500 112px Cormorant, Georgia, serif';
+    ctx.fillText('cuando nací', W / 2, 1408);
+    drawRows(ctx, rows, 1510, 70, W, false);
+  } else {
+    const g = ctx.createLinearGradient(0, 0, 0, H);
+    g.addColorStop(0, '#0e1531');
+    g.addColorStop(0.55, '#070b1a');
+    g.addColorStop(1, '#151033');
+    ctx.fillStyle = g;
+    ctx.fillRect(0, 0, W, H);
+    ctx.fillStyle = '#ece8f4';
+    ctx.font = '600 36px Cormorant, Georgia, serif';
+    ctx.textAlign = 'center';
+    ctx.fillText('A S T R O C O D I', W / 2, 120);
+    renderSky(ctx, { cx: W / 2, cy: 600, R: 410, lat: city.lat, lon: city.lon, date: data.when, ring: true,
+      objects: data.objects, labels: true, sunAlt: data.sunAlt, starScale: 2.3 });
+    ctx.fillStyle = '#ffd29a';
+    ctx.font = '500 30px "IBM Plex Mono", monospace';
+    ctx.fillText(dateLine, W / 2, 1110);
+    ctx.fillStyle = '#ece8f4';
+    ctx.font = '500 104px Cormorant, Georgia, serif';
+    ctx.fillText('Así estaba el cielo', W / 2, 1230);
+    ctx.font = 'italic 500 104px Cormorant, Georgia, serif';
+    ctx.fillText('cuando nací', W / 2, 1330);
+    drawRows(ctx, rows, 1450, 94, W, true);
   }
-  ctx.textAlign = 'center';
-  ctx.fillStyle = '#ffd29a';
-  ctx.font = '500 34px "Hanken Grotesk", system-ui, sans-serif';
-  ctx.fillText(`Descubrí el tuyo · @${INSTAGRAM}`, W / 2, 1830);
+  drawSticker(ctx, W / 2, 1790, cta);
 
   img.src = c.toDataURL('image/jpeg', 0.9);
-  img.dataset.for = cardKey();
+  img.dataset.for = key;
+  $('sheet-img').src = img.src;
   cardBlob = await new Promise((res) => c.toBlob(res, 'image/jpeg', 0.92));
 }
-const cardKey = () => `${data.y}-${data.m}-${data.d}-${data.city.name}`;
+const cardKey = () => `${data.y}-${data.m}-${data.d}-${fmtTime(data.when, 'UTC')}-${data.city.name}`;
+
+const openSheet = () => { $('sheet').hidden = false; };
+$('sheet-close').addEventListener('click', () => { $('sheet').hidden = true; });
 
 $('share').addEventListener('click', async () => {
-  const hint = $('share-hint');
   if (!cardBlob) return;
   const file = new File([cardBlob], 'mi-cielo-astrocodi.jpg', { type: 'image/jpeg' });
-  const text = `Así estaba el cielo la noche en que nací.${SITE_URL ? ' Descubrí el tuyo: ' + SITE_URL : ''}`;
   try {
     if (navigator.canShare && navigator.canShare({ files: [file] })) {
-      await navigator.share({ files: [file], text });
+      await navigator.share({ files: [file] });
       return;
     }
   } catch (e) {
     if (e && e.name === 'AbortError') return;
   }
-  hint.textContent = 'Mantené apretada la imagen y elegí “Guardar imagen”. Después subila a tus historias.';
-  hint.animate?.([{ opacity: 0.3 }, { opacity: 1 }], { duration: 500 });
+  openSheet();
 });
+
+$('save').addEventListener('click', () => {
+  if (!cardBlob) return;
+  try {
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(cardBlob);
+    a.download = 'mi-cielo-astrocodi.jpg';
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+  } catch (e) { /* algunos navegadores internos no descargan */ }
+  // En el navegador de Instagram la descarga no siempre funciona: mostramos cómo guardarla a mano.
+  openSheet();
+});
+
+$('send').addEventListener('click', async () => {
+  const url = SITE_URL || location.href;
+  const text = 'Mirá cómo estaba el cielo la noche en que naciste';
+  try {
+    if (navigator.share) { await navigator.share({ text, url }); return; }
+  } catch (e) {
+    if (e && e.name === 'AbortError') return;
+  }
+  try {
+    await navigator.clipboard.writeText(`${text}: ${url}`);
+    toast('Link copiado. Pegáselo a quien quieras.');
+  } catch (e) {
+    toast(url);
+  }
+});
+
+let toastTimer = 0;
+function toast(msg) {
+  const t = $('toast');
+  t.textContent = msg;
+  t.hidden = false;
+  clearTimeout(toastTimer);
+  toastTimer = setTimeout(() => { t.hidden = true; }, 3200);
+}
 
 /* ---------- Inicio ---------- */
 
