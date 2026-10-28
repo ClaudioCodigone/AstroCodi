@@ -1,0 +1,126 @@
+<!doctype html>
+<html lang="es">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>AstroCodi</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<meta name="description" content="Descubrí cómo estaba el cielo la noche en que naciste: tus estrellas, tu Luna y tu signo según el cielo real.">
+<meta name="theme-color" content="#060914">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Cormorant:ital,wght@0,500;0,600;1,500&family=Hanken+Grotesk:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap">
+<link rel="stylesheet" href="styles.css">
+</head>
+<body>
+<canvas id="bg" aria-hidden="true"></canvas>
+
+<main id="intro" class="intro">
+  <header class="brand">AstroCodi</header>
+  <div class="intro-body">
+    <p class="eyebrow" id="now-label">Cielo de ahora</p>
+    <h1 class="display">¿Cómo estaba el cielo la noche en que naciste?</h1>
+    <p class="lede">Poné tu fecha y te mostramos las estrellas, la Luna y los planetas de esa noche. Calculado con datos astronómicos reales.</p>
+
+    <form id="form" class="form" novalidate>
+      <fieldset class="field">
+        <legend>Fecha de nacimiento</legend>
+        <div class="date-row">
+          <select id="day" aria-label="Día" required><option value="">Día</option></select>
+          <select id="month" aria-label="Mes" required><option value="">Mes</option></select>
+          <select id="year" aria-label="Año" required><option value="">Año</option></select>
+        </div>
+      </fieldset>
+      <label class="field" for="city">
+        <span class="legend">Dónde naciste</span>
+        <select id="city"></select>
+      </label>
+      <p class="error" id="error" role="alert" hidden></p>
+      <button class="btn primary" id="go" type="submit">Ver mi cielo</button>
+      <p class="fine">No guardamos nada. Todo se calcula en tu teléfono.</p>
+    </form>
+  </div>
+</main>
+
+<section id="stories" class="stories" hidden aria-live="polite">
+  <div class="bars" id="bars"></div>
+  <button class="icon-btn restart" id="restart" type="button" aria-label="Empezar de nuevo">
+    <svg viewBox="0 0 24 24" width="20" height="20" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" fill="none"/></svg>
+  </button>
+
+  <article class="story" data-i="0">
+    <div class="visual"><canvas id="dome"></canvas></div>
+    <div class="copy">
+      <p class="eyebrow mono" id="s1-eyebrow"></p>
+      <h2 class="display">Así estaba el cielo la noche en que naciste.</h2>
+      <p id="s1-text"></p>
+    </div>
+  </article>
+
+  <article class="story" data-i="1">
+    <div class="visual"><canvas id="moon"></canvas></div>
+    <div class="copy">
+      <p class="eyebrow">La Luna de esa noche</p>
+      <h2 class="display" id="s2-title"></h2>
+      <p id="s2-text"></p>
+    </div>
+  </article>
+
+  <article class="story" data-i="2">
+    <div class="visual"><canvas id="star"></canvas></div>
+    <div class="copy">
+      <p class="eyebrow">Tu estrella</p>
+      <h2 class="display star-name" id="s3-title"></h2>
+      <p class="mono meta" id="s3-meta"></p>
+      <div class="timeline" id="s3-timeline" aria-hidden="true">
+        <div class="track"><span class="photon"></span></div>
+        <div class="ends"><span id="s3-from"></span><span>Hoy, en tus ojos</span></div>
+      </div>
+      <p id="s3-text"></p>
+      <p class="hint" id="s3-where"></p>
+    </div>
+  </article>
+
+  <article class="story" data-i="3">
+    <div class="visual"><canvas id="band"></canvas></div>
+    <div class="copy">
+      <p class="eyebrow">Tu signo, según el cielo real</p>
+      <p class="versus"><span class="old" id="s4-old"></span></p>
+      <h2 class="display" id="s4-title"></h2>
+      <p id="s4-text"></p>
+    </div>
+  </article>
+
+  <article class="story" data-i="4">
+    <div class="visual"><canvas id="orbit"></canvas></div>
+    <div class="copy">
+      <p class="eyebrow">Desde que naciste</p>
+      <h2 class="display">Viajaste con la Tierra alrededor del Sol.</h2>
+      <p class="km mono" id="s5-km">0</p>
+      <p class="km-unit">kilómetros, y sigue sumando a 29,8 km por segundo.</p>
+      <dl class="stats" id="s5-stats"></dl>
+    </div>
+  </article>
+
+  <article class="story" data-i="5">
+    <div class="visual card-wrap"><img id="card" alt="Tu cielo en una imagen para compartir"></div>
+    <div class="copy">
+      <h2 class="display small">Tu cielo, listo para tus historias.</h2>
+      <div class="actions">
+        <button class="btn primary" id="share" type="button">Compartir</button>
+        <button class="btn ghost" id="again" type="button">Probar otra fecha</button>
+      </div>
+      <p class="hint" id="share-hint">Si no se abre el menú, mantené apretada la imagen y elegí “Guardar”.</p>
+    </div>
+  </article>
+
+  <div class="tap prev" id="tap-prev" aria-hidden="true"></div>
+  <div class="tap next" id="tap-next" aria-hidden="true"></div>
+  <p class="nudge" id="nudge">Tocá a la derecha para seguir</p>
+</section>
+
+<script src="https://cdn.jsdelivr.net/npm/astronomy-engine@2.1.19/astronomy.browser.min.js" defer></script>
+<script src="data/sky.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
