@@ -3,7 +3,7 @@
 'use strict';
 
 // Configuración: tu usuario de Instagram y la dirección pública de la web.
-const INSTAGRAM = 'astrocodi';
+const INSTAGRAM = 'claudiocodigone';
 const SITE_URL = location.origin.startsWith('http') ? location.origin + location.pathname : '';
 
 const DEG = Math.PI / 180;
